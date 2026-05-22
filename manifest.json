@@ -1,4 +1,4 @@
-const CACHE = 'drone-studio-v1';
+const CACHE = 'felixinfurs';
 const ASSETS = [
   '/',
   '/index.html',
