@@ -1,40 +1,58 @@
-const CACHE = 'felixinfurs';
-const ASSETS = [
-  '/',
-  '/index.html',
-  '/manifest.json',
-  '/icons/icon-192.png',
-  '/icons/icon-512.png'
-];
-
-self.addEventListener('install', e => {
-  e.waitUntil(
-    caches.open(CACHE).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting())
-  );
-});
-
-self.addEventListener('activate', e => {
-  e.waitUntil(
-    caches.keys().then(keys =>
-      Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)))
-    ).then(() => self.clients.claim())
-  );
-});
-
-self.addEventListener('fetch', e => {
-  // Audio files: network first, no caching (they can be large)
-  if (e.request.url.match(/\.(mp3|wav|ogg|flac|aac|m4a)$/i)) {
-    e.respondWith(fetch(e.request));
-    return;
-  }
-  // App shell: cache first
-  e.respondWith(
-    caches.match(e.request).then(cached => cached || fetch(e.request).then(res => {
-      if (res.ok) {
-        const clone = res.clone();
-        caches.open(CACHE).then(c => c.put(e.request, clone));
-      }
-      return res;
-    }))
-  );
-});
+{
+  "name": "The Juno Room",
+  "short_name": "Juno Room",
+  "description": "An interactive candlelit music room — where Felix Mendelssohn performed for Johann Wolfgang von Goethe",
+  "start_url": "./",
+  "scope": "./",
+  "display": "fullscreen",
+  "orientation": "any",
+  "background_color": "#000000",
+  "theme_color": "#c8a34a",
+  "lang": "en",
+  "categories": ["music", "entertainment", "education"],
+  "icons": [
+    {
+      "src": "./icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "./icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "./icons/icon-180.png",
+      "sizes": "180x180",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ],
+  "screenshots": [
+    {
+      "src": "./screenshots/desktop.jpg",
+      "sizes": "1448x1086",
+      "type": "image/jpeg",
+      "form_factor": "wide",
+      "label": "The Juno Room — desktop view"
+    },
+    {
+      "src": "./screenshots/mobile.jpg",
+      "sizes": "941x1672",
+      "type": "image/jpeg",
+      "form_factor": "narrow",
+      "label": "The Juno Room — mobile view"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Enter the Room",
+      "short_name": "Enter",
+      "description": "Open the Juno Room experience",
+      "url": "./"
+    }
+  ],
+  "prefer_related_applications": false
+}
