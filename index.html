@@ -458,7 +458,7 @@ window.addEventListener("load",()=>{
     setTimeout(()=>{loading.style.display="none";flyInPages();scheduleDrop()},1300);
   },t3+3100);
 
-  // ── Bind stop-catcher AFTER DOM is ready (div is after </script>) ─
+  // ── Bind stop-catcher AFTER DOM is ready (element placed after script tag) ─
   var _sc=document.getElementById("stop-catcher");
   if(_sc){
     _sc.addEventListener("click",   ()=>stopPlayback());
