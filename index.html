@@ -11,13 +11,14 @@
 html,body{width:100%;height:100%;overflow:hidden;background:#000}
 body{font-family:"IM Fell English",serif}
 #scene{position:relative;width:100vw;height:100vh;overflow:hidden}
-#bg{position:absolute;inset:0;background-size:contain;background-repeat:no-repeat;background-position:center;filter:brightness(0.17);will-change:filter;transition:filter 3.2s ease-in}
+#bg{position:absolute;inset:0;background-size:contain;background-repeat:no-repeat;background-position:center;filter:brightness(0.32) saturate(0.18);will-change:filter;transition:filter 3.5s ease-in}
 #overlay{position:absolute;overflow:visible}
+#lzones{opacity:0}  /* lit by JS */
 .lz{position:absolute;pointer-events:none;filter:blur(55px);will-change:filter,opacity}
 @keyframes fk1{0%{opacity:.80}14%{opacity:.95}28%{opacity:.77}43%{opacity:.93}57%{opacity:.79}72%{opacity:.96}86%{opacity:.82}100%{opacity:.91}}
 @keyframes fk2{0%{opacity:.91}16%{opacity:.76}33%{opacity:.96}50%{opacity:.82}67%{opacity:.97}83%{opacity:.78}100%{opacity:.89}}
 @keyframes fk3{0%{opacity:.84}20%{opacity:.97}40%{opacity:.78}60%{opacity:.95}80%{opacity:.81}100%{opacity:.88}}
-.wd{position:absolute;width:2px;pointer-events:none;z-index:12;background:linear-gradient(rgba(245,232,207,.86),rgba(245,232,207,0));border-radius:0 0 1px 1px;transform-origin:top center}
+.wd{position:absolute;width:1px;pointer-events:none;z-index:12;opacity:0;transition:opacity 2s ease-in;background:linear-gradient(rgba(245,232,207,.86),rgba(245,232,207,0));border-radius:0 0 1px 1px;transform-origin:top center}
 @keyframes wdA{0%{height:0;opacity:.88}44%{height:12px;opacity:.84}77%{height:18px;opacity:.68}100%{height:0;opacity:0;transform:translateY(4px)}}
 @keyframes wdB{0%{height:0;opacity:.82}41%{height:9px;opacity:.78}75%{height:15px;opacity:.58}100%{height:0;opacity:0;transform:translateY(3px)}}
 @keyframes fth0ls{0.0%{left:12.50%;top:40.00%;transform:rotate(42.0deg) scale(0.220);opacity:0} 5.6%{left:24.34%;top:22.47%;transform:rotate(25.2deg) scale(0.274);opacity:1} 11.1%{left:27.00%;top:40.46%;transform:rotate(-4.9deg) scale(0.328);opacity:1} 16.7%{left:21.38%;top:52.22%;transform:rotate(-31.3deg) scale(0.382);opacity:1} 22.2%{left:14.97%;top:50.46%;transform:rotate(-40.7deg) scale(0.437);opacity:1} 27.8%{left:13.89%;top:48.97%;transform:rotate(-30.3deg) scale(0.491);opacity:1} 33.3%{left:18.95%;top:52.59%;transform:rotate(-8.7deg) scale(0.545);opacity:1} 38.9%{left:25.86%;top:54.54%;transform:rotate(9.9deg) scale(0.599);opacity:1} 44.4%{left:29.58%;top:54.81%;transform:rotate(14.9deg) scale(0.653);opacity:1} 50.0%{left:28.69%;top:54.07%;transform:rotate(5.0deg) scale(0.708);opacity:1} 55.6%{left:25.85%;top:54.17%;transform:rotate(-12.5deg) scale(0.762);opacity:1} 61.1%{left:24.66%;top:56.38%;transform:rotate(-26.7deg) scale(0.816);opacity:1} 66.7%{left:26.42%;top:57.62%;transform:rotate(-30.9deg) scale(0.870);opacity:1} 72.2%{left:29.53%;top:58.10%;transform:rotate(-25.3deg) scale(0.924);opacity:1} 77.8%{left:31.76%;top:58.29%;transform:rotate(-16.2deg) scale(0.978);opacity:1} 83.3%{left:32.51%;top:59.12%;transform:rotate(-10.7deg) scale(1.000);opacity:1} 88.9%{left:32.94%;top:60.41%;transform:rotate(-11.6deg) scale(1.000);opacity:1} 94.4%{left:33.94%;top:61.35%;transform:rotate(-16.5deg) scale(1.000);opacity:1} 100.0%{left:35.00%;top:62.16%;transform:rotate(-20.0deg) scale(1.000);opacity:1}}
@@ -452,7 +453,17 @@ window.addEventListener("load",()=>{
   setTimeout(()=>{fadeEl(lt2,true,FADE)},t2);
   setTimeout(()=>{fadeEl(lt2,false,FADE)},t2+HOLD);
   const t3=t2+HOLD+FADE+80;
-  setTimeout(()=>{fadeEl(lt3,true,FADE);document.getElementById("bg").style.filter="brightness(1)"},t3);
+  setTimeout(()=>{fadeEl(lt3,true,FADE);
+    // Transition from moonlit to warm candlelight
+    document.getElementById("bg").style.filter="brightness(1) saturate(1)";
+    // Candle glows fade in
+    var _lz=document.getElementById("lzones");
+    _lz.style.transition="opacity 3.5s ease-in";
+    _lz.style.opacity="1";
+    // Wax drips appear
+    document.querySelectorAll(".wd").forEach(function(el){
+      el.style.opacity="1";
+    })},t3);
   setTimeout(()=>{
     loading.style.transition="opacity 1.3s ease";loading.style.opacity="0";
     setTimeout(()=>{loading.style.display="none";flyInPages();scheduleDrop()},1300);
@@ -494,17 +505,19 @@ function hideTapOverlay() {
 
 // ── Backdrop dismiss ─────────────────────────────────────────────────
 // touchstart fires reliably on iOS for any element (click does not on plain divs)
-document.getElementById("tap-overlay").addEventListener("touchstart", e => {
-  if (e.target.closest("#tap-card")) return;
-  e.preventDefault();
+// Tap overlay dismiss — document capture touchstart fires first on iOS
+// More reliable than attaching directly to the overlay element
+document.addEventListener("touchstart", function _overlayDismiss(e) {
+  var ov = document.getElementById("tap-overlay");
+  if (!ov || !ov.classList.contains("active")) return; // overlay not showing
+  if (e.target.closest("#tap-card")) return;           // tapping card itself
+  e.preventDefault(); // prevent ghost click
   hideTapOverlay();
-}, {passive: false});
+}, {passive: false, capture: true});
 
-// click fallback for desktop
+// Desktop click fallback
 document.getElementById("tap-overlay").addEventListener("click", e => {
-  if (!e.target.closest("#tap-card")) {
-    hideTapOverlay();
-  }
+  if (!e.target.closest("#tap-card")) hideTapOverlay();
 });
 
 // ── "Play Now" button ────────────────────────────────────────────────
