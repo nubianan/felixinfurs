@@ -4,7 +4,7 @@
     ║  experience works offline and loads instantly on return. ║
     ╚══════════════════════════════════════════════════════════╝ */
 
-const VERSION     = 'juno-room-v2';
+const VERSION     = 'juno-room-v1';
 const SHELL_CACHE = `${VERSION}-shell`;
 const AUDIO_CACHE = `${VERSION}-audio`;
 const FONT_CACHE  = `${VERSION}-fonts`;
