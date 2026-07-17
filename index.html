@@ -99,6 +99,23 @@ body{font-family:"IM Fell English",serif}
   display:none;cursor:default;
   background:rgba(0,0,0,0.001); /* iOS: transparent = no touch events */
 }
+
+/* ── WAVEFORM CANVAS ──────────────────────────────────────────────── */
+#waveform-canvas{
+  position:absolute;
+  pointer-events:none;
+  z-index:17;
+  display:none;
+  opacity:0;
+  transition:opacity 1.2s ease;
+  border-radius:2px;
+}
+#waveform-canvas.active{ opacity:1; }
+
+/* ── PIANO PAGE — smooth kick-glow transition ─────────────────────── */
+#piano-page{
+  transition: filter 0.08s ease-out;
+}
 </style>
 </head>
 <body>
@@ -119,6 +136,7 @@ body{font-family:"IM Fell English",serif}
     <div class="sp" id="sp2"></div><div class="sp" id="sp3"></div>
     <div class="sp" id="sp4"></div>
     <div id="piano-page"></div>
+    <canvas id="waveform-canvas"></canvas>
   </div>
 </div>
 <script>
@@ -283,12 +301,19 @@ function showPianoPage(idx){
   pp.style.transform=`${pos.persp||''} rotate(${pos.rot}deg)`;
   pp.style.opacity="0";
   pp.style.display="block";
-  pp.getBoundingClientRect();              // force reflow
+  pp.getBoundingClientRect();
   pp.style.transition="opacity 0.9s ease";
   pp.style.opacity="1";
+
+  // Start ink + waveform after the 0.9s fade-in completes
+  setTimeout(()=>{
+    _startInkAnimation(pp, _trackDuration*1000);
+    _startAudioVisuals(pp);
+  }, 950);
 }
 
 function hidePianoPage(then){
+  _stopAudioVisuals();
   const pp=document.getElementById("piano-page");
   pp.style.transition="opacity 1s ease";
   pp.style.opacity="0";
@@ -345,9 +370,64 @@ function startSynth(idx,gainNode){
 }
 
 let aA=new Audio(),aB=new Audio(),uA=true;
+let _srcA=null,_srcB=null;          // MediaElementSource nodes (created once)
+let _masterAnalyser=null;            // single AnalyserNode for all audio
+let _freqData=null,_timeData=null;   // reusable typed arrays
+let _animLoopId=null;                // rAF handle
+let _kickCooldown=false;             // prevent haptic spam
+let _trackDuration=300;             // seconds, updated on loadedmetadata
+let _inkTimers=[];                   // setTimeout handles for ink reveals
+
+function showAudioError(msg){
+  const np=document.getElementById("np");
+  np.textContent="\u26a0 "+msg;
+  np.style.opacity="1";
+  np.style.color="rgba(255,120,90,0.95)";
+  setTimeout(()=>{ np.style.color="rgba(212,180,68,0.60)"; },4000);
+}
+
 function playReal(idx,src){
+  const isA = uA;
   const fi=uA?aA:aB,fo=uA?aB:aA;
-  fi.src=src;fi.loop=false;fi.volume=0;fi.play();
+  fi.src=src;
+  fi.loop=false;
+  fi.volume=0;
+
+  // Surface load failures
+  fi.onerror=()=>{
+    const code = fi.error ? fi.error.code : 0;
+    const reasons = {
+      1:"Fetch aborted",
+      2:"Network error — check your internet connection",
+      3:"File is corrupted or codec is unsupported",
+      4:"File not found (404) or format unsupported — is it a real MP3?"
+    };
+    const msg = reasons[code] || "Unknown error (code "+code+")";
+    console.error("[Juno Room] Audio error for",src,"— code",code,":",msg);
+    showAudioError(src.split("/").pop() + ": " + msg);
+  };
+
+  // Track duration for ink animation pacing
+  fi.addEventListener("loadedmetadata",()=>{
+    _trackDuration = fi.duration||300;
+  },{once:true});
+
+  // ── Route through Web Audio analyser ──────────────────────────────
+  // createMediaElementSource() is called ONCE per element (throws if repeated)
+  ensureCtx();
+  _ensureAnalyser();
+  if(isA && !_srcA){ _srcA=ctx.createMediaElementSource(aA); _srcA.connect(_masterAnalyser); }
+  if(!isA && !_srcB){ _srcB=ctx.createMediaElementSource(aB); _srcB.connect(_masterAnalyser); }
+  // ─────────────────────────────────────────────────────────────────
+
+  const playPromise=fi.play();
+  if(playPromise&&playPromise.catch){
+    playPromise.catch(err=>{
+      console.error("[Juno Room] play() rejected for",src,err);
+      showAudioError("Playback blocked: "+src);
+    });
+  }
+
   fi.onended=()=>onTrackEnd(idx);
   let t=0;const iv=setInterval(()=>{
     t+=.05;fi.volume=Math.min(1,t/3);fo.volume=Math.max(0,1-t/3);
@@ -488,6 +568,41 @@ window.addEventListener("load",()=>{
   document.addEventListener("click",    _stopIfPlaying, true);
   document.addEventListener("touchend", _stopIfPlaying, true);
 
+  // ── Tap-overlay + Play-Now button listeners ──────────────────────
+  // Moved here because #tap-overlay/#tap-play-btn are defined AFTER
+  // the <script> tag in the HTML — at top-level parse time they don't
+  // exist yet, so getElementById returns null and .addEventListener
+  // throws, silently breaking everything that follows it. Inside
+  // window.load the full DOM is guaranteed to exist.
+  document.getElementById("tap-overlay").addEventListener("click", e => {
+    if (!e.target.closest("#tap-card")) hideTapOverlay();
+  });
+
+  document.getElementById("tap-play-btn").addEventListener("touchend", e => {
+    e.preventDefault();
+    e.stopPropagation();
+    tapBtnHandled = true;
+    const idx = tapPendingIdx;
+    hideTapOverlay();
+    if (idx < 0) { tapBtnHandled = false; return; }
+    ensureCtx();
+    const doPlay = () => { playTrack(idx); };
+    if (ctx && ctx.state === "suspended") {
+      ctx.resume().then(doPlay).catch(doPlay);
+    } else {
+      doPlay();
+    }
+    setTimeout(() => { tapBtnHandled = false; }, 600);
+  });
+
+  document.getElementById("tap-play-btn").addEventListener("click", e => {
+    if (tapBtnHandled) return;
+    e.stopPropagation();
+    const idx = tapPendingIdx;
+    hideTapOverlay();
+    if (idx >= 0) playTrack(idx);
+  });
+
 });
 
 // ── TAP OVERLAY ──────────────────────────────────────────────────────
@@ -517,44 +632,12 @@ document.addEventListener("touchstart", function _overlayDismiss(e) {
   hideTapOverlay();
 }, {passive: false, capture: true});
 
-// Desktop click fallback
-document.getElementById("tap-overlay").addEventListener("click", e => {
-  if (!e.target.closest("#tap-card")) hideTapOverlay();
-});
-
-// ── "Play Now" button ────────────────────────────────────────────────
-// touchend fires before click and is reliable on iOS buttons.
-// We resume the AudioContext here — must happen inside a user-gesture handler.
-document.getElementById("tap-play-btn").addEventListener("touchend", e => {
-  e.preventDefault();       // prevents the ghost click that would follow
-  e.stopPropagation();      // don't let the backdrop touchstart see this
-  tapBtnHandled = true;
-  const idx = tapPendingIdx;
-  hideTapOverlay();
-  if (idx < 0) { tapBtnHandled = false; return; }
-  // Resume AudioContext (required on iOS before any audio can start)
-  ensureCtx();
-  const doPlay = () => { playTrack(idx); };
-  if (ctx && ctx.state === "suspended") {
-    ctx.resume().then(doPlay).catch(doPlay);
-  } else {
-    doPlay();
-  }
-  setTimeout(() => { tapBtnHandled = false; }, 600);
-});
-
-// click fallback for desktop (skipped if touchend already handled it)
-document.getElementById("tap-play-btn").addEventListener("click", e => {
-  if (tapBtnHandled) return;
-  e.stopPropagation();
-  const idx = tapPendingIdx;
-  hideTapOverlay();
-  if (idx >= 0) playTrack(idx);
-});
+// (moved into window.load — DOM not ready at top-level parse time)
 
 // ── STOP PLAYBACK ─────────────────────────────────────────────────────
 function stopPlayback() {
   if (activePianoIdx < 0) return;
+  _stopAudioVisuals();
   const prev = activePianoIdx;
   activePianoIdx = -1;
   hidePianoPage();
@@ -589,6 +672,203 @@ function stopPlayback() {
   document.getElementById("stop-catcher").style.display="none"; // disable catcher
 }
 
+
+// ════════════════════════════════════════════════════════════════════
+//  AUDIO VISUAL ENGINE
+//  Three features: ink writing · waveform · kick glow + haptics
+// ════════════════════════════════════════════════════════════════════
+
+// ── Analyser setup ───────────────────────────────────────────────────
+function _ensureAnalyser(){
+  if(_masterAnalyser) return;
+  _masterAnalyser = ctx.createAnalyser();
+  _masterAnalyser.fftSize = 2048;
+  _masterAnalyser.smoothingTimeConstant = 0.80;
+  _masterAnalyser.connect(ctx.destination);
+  _freqData = new Uint8Array(_masterAnalyser.frequencyBinCount);
+  _timeData = new Uint8Array(_masterAnalyser.fftSize);
+}
+
+// ── Ink writing animation ────────────────────────────────────────────
+// Staff lines draw themselves L→R via stroke-dashoffset.
+// Notes blur-in across the duration of the piece.
+function _startInkAnimation(pianoPage, durationMs){
+  // Clear any previous timers
+  _inkTimers.forEach(id=>clearTimeout(id)); _inkTimers=[];
+
+  const svg = pianoPage.querySelector('svg');
+  if(!svg) return;
+
+  // Target the LAST <g> in the SVG = music notation group
+  const gs = svg.querySelectorAll('g');
+  const musicG = gs[gs.length-1];
+  if(!musicG) return;
+
+  const lines    = [...musicG.querySelectorAll('line')];
+  const noteEls  = [...musicG.querySelectorAll('ellipse, path')];
+  const textEls  = [...musicG.querySelectorAll('text')];
+
+  // ── STEP 1: Staff lines draw left-to-right (0-1.5s) ──────────────
+  lines.forEach((line, i)=>{
+    const x1=parseFloat(line.getAttribute('x1')||0);
+    const y1=parseFloat(line.getAttribute('y1')||0);
+    const x2=parseFloat(line.getAttribute('x2')||100);
+    const y2=parseFloat(line.getAttribute('y2')||0);
+    const len = Math.hypot(x2-x1, y2-y1);
+    line.style.strokeDasharray = len+'px';
+    line.style.strokeDashoffset = len+'px';
+    const dur  = (0.5 + Math.random()*0.6).toFixed(2);
+    const delay = i * 25; // stagger 25ms each
+    const id = setTimeout(()=>{
+      line.style.transition = `stroke-dashoffset ${dur}s ease-in-out`;
+      line.style.strokeDashoffset = '0px';
+    }, delay);
+    _inkTimers.push(id);
+  });
+
+  // ── STEP 2: Clef text appears after lines (0.8s) ─────────────────
+  textEls.forEach((el,i)=>{
+    el.style.opacity='0';
+    const id=setTimeout(()=>{
+      el.style.transition='opacity 0.5s ease';
+      el.style.opacity='1';
+    }, 800+i*120);
+    _inkTimers.push(id);
+  });
+
+  // ── STEP 3: Notes blur-in across the song duration ───────────────
+  // First hide all note elements
+  noteEls.forEach(el=>{
+    el.style.opacity='0';
+    el.style.filter='blur(4px)';
+  });
+  const spreadMs = Math.min(durationMs * 0.88, 300000);
+  noteEls.forEach((el,i)=>{
+    // Each note gets a delay proportional to its position in the piece
+    const delay = 1000 + (i/Math.max(noteEls.length,1)) * spreadMs;
+    const id = setTimeout(()=>{
+      el.style.transition='opacity 0.28s ease, filter 0.38s ease';
+      el.style.opacity='1';
+      el.style.filter='blur(0px)';
+    }, delay);
+    _inkTimers.push(id);
+  });
+}
+
+function _stopInkAnimation(){
+  _inkTimers.forEach(id=>clearTimeout(id));
+  _inkTimers=[];
+  // Instantly show all notation (music may resume next track)
+  const pp=document.getElementById('piano-page');
+  if(!pp) return;
+  const svg=pp.querySelector('svg'); if(!svg) return;
+  svg.querySelectorAll('line,ellipse,path,text').forEach(el=>{
+    el.style.transition='';
+    el.style.opacity='';
+    el.style.filter='';
+    el.style.strokeDasharray='';
+    el.style.strokeDashoffset='';
+  });
+}
+
+// ── Waveform drawing ─────────────────────────────────────────────────
+function _positionWaveformCanvas(pianoPage){
+  const canvas=document.getElementById('waveform-canvas');
+  const ov=document.getElementById('overlay');
+  if(!canvas||!pianoPage||!ov) return;
+  const ppRect=pianoPage.getBoundingClientRect();
+  const ovRect=ov.getBoundingClientRect();
+  const W=Math.round(ppRect.width);
+  const H=38;
+  canvas.width=W; canvas.height=H;
+  canvas.style.width=W+'px'; canvas.style.height=H+'px';
+  canvas.style.left=(ppRect.left-ovRect.left)+'px';
+  canvas.style.top=(ppRect.bottom-ovRect.top+4)+'px';
+  canvas.style.display='block';
+  requestAnimationFrame(()=>canvas.classList.add('active'));
+}
+
+function _drawWaveform(){
+  const canvas=document.getElementById('waveform-canvas');
+  if(!canvas||!_masterAnalyser||!_timeData) return;
+  const W=canvas.width, H=canvas.height;
+  const c2=canvas.getContext('2d');
+  c2.clearRect(0,0,W,H);
+  _masterAnalyser.getByteTimeDomainData(_timeData);
+  c2.lineWidth=1.8;
+  c2.strokeStyle='rgba(215,178,60,0.72)';
+  c2.shadowBlur=10; c2.shadowColor='rgba(215,178,60,0.45)';
+  c2.beginPath();
+  const step=W/_timeData.length;
+  let x=0;
+  for(let i=0;i<_timeData.length;i++){
+    const y=(_timeData[i]/128)*H/2;
+    i===0?c2.moveTo(x,y):c2.lineTo(x,y);
+    x+=step;
+  }
+  c2.lineTo(W,H/2);
+  c2.stroke();
+  c2.shadowBlur=0;
+}
+
+// ── Kick / low-frequency detection ───────────────────────────────────
+// Bins 1-6 cover ~20-130Hz (kick drum fundamental range)
+// at fftSize=2048 and typical 44100Hz sample rate
+function _detectKick(){
+  if(!_masterAnalyser||!_freqData) return false;
+  _masterAnalyser.getByteFrequencyData(_freqData);
+  let sum=0;
+  for(let i=1;i<=6;i++) sum+=_freqData[i];
+  return (sum/6)>155;
+}
+
+function _onKickHit(){
+  if(_kickCooldown) return;
+  _kickCooldown=true;
+  setTimeout(()=>{ _kickCooldown=false; },110);
+
+  // Glow pulse on piano page
+  const pp=document.getElementById('piano-page');
+  if(pp&&pp.style.display!=='none'){
+    pp.style.filter='drop-shadow(0 0 28px rgba(255,210,80,0.90)) brightness(1.38) drop-shadow(2px 4px 12px rgba(0,0,0,0.8))';
+    setTimeout(()=>{
+      pp.style.filter='drop-shadow(0 0 20px rgba(210,175,60,0.5)) drop-shadow(2px 4px 12px rgba(0,0,0,0.8))';
+    },85);
+  }
+
+  // Haptic — Android Chrome only; silent no-op everywhere else
+  if(navigator.vibrate) navigator.vibrate(30);
+}
+
+// ── Master animation loop ─────────────────────────────────────────────
+function _startAudioVisuals(pianoPage){
+  cancelAnimationFrame(_animLoopId);
+  _positionWaveformCanvas(pianoPage);
+  function loop(){
+    _animLoopId=requestAnimationFrame(loop);
+    _drawWaveform();
+    if(_detectKick()) _onKickHit();
+  }
+  loop();
+}
+
+function _stopAudioVisuals(){
+  cancelAnimationFrame(_animLoopId); _animLoopId=null;
+  _stopInkAnimation();
+  const canvas=document.getElementById('waveform-canvas');
+  if(canvas){
+    canvas.classList.remove('active');
+    setTimeout(()=>{
+      canvas.style.display='none';
+      const c2=canvas.getContext('2d');
+      c2.clearRect(0,0,canvas.width,canvas.height);
+    },1200);
+  }
+  // Restore piano page filter
+  const pp=document.getElementById('piano-page');
+  if(pp) pp.style.filter='drop-shadow(0 0 20px rgba(210,175,60,0.5)) drop-shadow(2px 4px 12px rgba(0,0,0,0.8))';
+}
+// ════════════════════════════════════════════════════════════════════
 
 </script>
 
